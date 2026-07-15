@@ -108,23 +108,6 @@ def test_collect_entries_follows_symlink_file(tmp_path):
         assert f.read() == b"REAL"      # 读到的是目标内容
 
 
-# ---------- tar-slip 成员校验 ----------
-
-@pytest.mark.parametrize("member", [
-    "../evil.txt", "../../evil.txt", "sub/../../evil.txt", "/tmp/evil.txt",
-])
-def test_assert_safe_members_rejects(tmp_path, member):
-    with pytest.raises(czip.CzipError) as ei:
-        czip._assert_safe_members([member], str(tmp_path / "target"))
-    assert ei.value.code == czip.EXIT_INTERNAL
-    assert "非法路径" in ei.value.msg
-
-
-def test_assert_safe_members_allows_normal(tmp_path):
-    # 正常成员不抛
-    czip._assert_safe_members(["a/b.txt", "c.txt"], str(tmp_path / "target"))
-
-
 # ---------- ZipCrypto 手搓写入器 ----------
 
 def test_zipcrypto_bit11_and_encrypt_bit(tmp_path):

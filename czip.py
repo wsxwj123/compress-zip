@@ -294,16 +294,6 @@ def _looks_like_password_error(exc):
     return "password" in s or "decrypt" in s
 
 
-def _assert_safe_members(names, dest):
-    """逐成员校验解出真实路径落在 dest 内，含 ../ 或绝对路径 → 拒绝（tar-slip）。
-    在写盘前调用：拒绝时临时目录尚空，逃逸成员绝不落地。"""
-    base = os.path.abspath(dest)
-    for name in names:
-        real = os.path.abspath(os.path.join(base, name))
-        if real != base and not real.startswith(base + os.sep):
-            raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
-
-
 class _ZipSource:
     def __init__(self, archive, pw):
         pyzipper = _require("pyzipper")
