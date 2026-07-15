@@ -73,11 +73,17 @@ def avoid_collision(path):
         n += 1
 
 
+def _is_macos_junk(name):
+    """macOS 元数据：.DS_Store（任意层）或 __MACOSX 目录（§1.3.2，不写进包）。"""
+    return name == ".DS_Store" or name == "__MACOSX"
+
+
 def collect_entries(inputs):
     """遍历输入，产出 [(src_path_or_None, arcname, is_dir)]。
     - 目录：递归；仅「叶子空目录」显式产出目录条目（非空目录由文件路径隐含）。
     - symlink 跟随（followlinks / 目录跟随、文件 open 跟随），存目标内容（§1.3.1）。
-    - arcname 前缀 = 输入的 basename。
+    - arcname 前缀 = 输入的 basename（不加额外顶层前缀）。
+    - 不写 macOS 元数据 .DS_Store / __MACOSX（§1.3.2）。
     """
     entries = []
     for inp in inputs:
@@ -91,16 +97,21 @@ def collect_entries(inputs):
                     dirnames[:] = []  # 已访问过的真实目录，不再深入
                     continue
                 seen.add(key)
+                dirnames[:] = [d for d in dirnames if not _is_macos_junk(d)]
                 rel = os.path.relpath(dirpath, inp)
                 arcdir = base if rel == "." else os.path.join(base, rel)
                 arcdir = arcdir.replace(os.sep, "/")
                 if not dirnames and not filenames:
                     entries.append((None, arcdir + "/", True))
                 for fn in sorted(filenames):
+                    if _is_macos_junk(fn):
+                        continue
                     full = os.path.join(dirpath, fn)
                     arc = (arcdir + "/" + fn) if rel != "." else (base + "/" + fn)
                     entries.append((full, arc, False))
         else:
+            if _is_macos_junk(base):
+                continue
             entries.append((inp, base, False))
     return entries
 
@@ -126,15 +137,8 @@ def derive_output_path(inputs, fmt):
     if len(inputs) == 1:
         stem = os.path.basename(os.path.normpath(first))
     else:
-        # 所有输入都落在第一个输入的父目录内（含其子目录）→ 用该父目录名；
-        # 否则（跨目录）→ 用第一个输入名（INTERFACE §1.3）
-        def _under(p):
-            ap = os.path.abspath(p)
-            return ap == out_dir or ap.startswith(out_dir + os.sep)
-        if all(_under(p) for p in inputs):
-            stem = os.path.basename(out_dir)
-        else:
-            stem = os.path.basename(os.path.normpath(first))
+        # 多选（无论同目录/跨目录）→ 固定基础名 归档（§1.3）
+        stem = "归档"
     return os.path.join(out_dir, stem + ext)
 
 
@@ -243,11 +247,19 @@ def _compress_7z(inputs, out, encrypt, pw):
 
 def _compress_targz(inputs, out):
     import tarfile
+
+    def _filter(ti):
+        # 不写 macOS 元数据（§1.3.2）
+        for seg in ti.name.split("/"):
+            if _is_macos_junk(seg):
+                return None
+        return ti
+
     # dereference=True：跟随 symlink 存目标内容（§1.3.1）
     with tarfile.open(out, "w:gz", dereference=True) as tar:
         for inp in inputs:
             base = os.path.basename(os.path.normpath(inp))
-            tar.add(inp, arcname=base)
+            tar.add(inp, arcname=base, filter=_filter)
 
 
 # ---------- extract ----------

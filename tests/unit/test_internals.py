@@ -64,20 +64,22 @@ def test_derive_single_dir(tmp_path):
     assert out == str(tmp_path / "资料.tar.gz")
 
 
-def test_derive_multi_same_parent_uses_parent(tmp_path):
+def test_derive_multi_same_parent_uses_archive(tmp_path):
+    # 多选（改）→ 固定基础名 归档，落第一个输入的父目录（§1.3）
     parent = tmp_path / "工作区"
     (parent / "子").mkdir(parents=True)
     a = parent / "a.txt"; a.write_bytes(b"a")
-    c = parent / "子" / "c.txt"; c.write_bytes(b"c")   # 嵌套仍算落在 parent 内
+    c = parent / "子" / "c.txt"; c.write_bytes(b"c")
     out = czip.derive_output_path([str(a), str(c)], "zip")
-    assert out == str(parent / "工作区.zip")
+    assert out == str(parent / "归档.zip")
 
 
-def test_derive_multi_cross_parent_uses_first(tmp_path):
+def test_derive_multi_cross_parent_uses_archive(tmp_path):
+    # 多选跨目录（改）→ 同样 归档，落第一个输入的父目录（§1.3）
     a = tmp_path / "d1" / "首个.txt"; a.parent.mkdir(); a.write_bytes(b"a")
     b = tmp_path / "d2" / "第二.txt"; b.parent.mkdir(); b.write_bytes(b"b")
     out = czip.derive_output_path([str(a), str(b)], "zip")
-    assert out == str(tmp_path / "d1" / "首个.txt.zip")
+    assert out == str(tmp_path / "d1" / "归档.zip")
 
 
 # ---------- collect_entries：空目录 + symlink 跟随 ----------
