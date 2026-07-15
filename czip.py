@@ -10,6 +10,7 @@ import argparse
 import os
 import shutil
 import sys
+import tempfile
 import zipfile
 import zlib
 
@@ -82,7 +83,14 @@ def collect_entries(inputs):
     for inp in inputs:
         base = os.path.basename(os.path.normpath(inp))
         if os.path.isdir(inp):  # os.path.isdir 跟随 symlink
+            seen = set()  # 防循环 symlink 无限递归（记 (dev, ino)）
             for dirpath, dirnames, filenames in os.walk(inp, followlinks=True):
+                st = os.stat(dirpath)
+                key = (st.st_dev, st.st_ino)
+                if key in seen:
+                    dirnames[:] = []  # 已访问过的真实目录，不再深入
+                    continue
+                seen.add(key)
                 rel = os.path.relpath(dirpath, inp)
                 arcdir = base if rel == "." else os.path.join(base, rel)
                 arcdir = arcdir.replace(os.sep, "/")
@@ -144,9 +152,10 @@ def do_compress(args, pw):
     if encrypt != "none" and not pw:
         raise CzipError(EXIT_PASSWORD, "该加密方式需要密码，但未提供")
 
-    # 3) 输入存在性（→ 3）
+    # 3) 输入存在性（→ 3）。用 exists（跟随 symlink）：悬空软链指向的目标不存在，
+    #    §1.3.1 要存目标内容却无目标可存，语义上就是「找不到输入」。
     for p in args.paths:
-        if not os.path.lexists(p):  # lexists：悬空 symlink 也算存在
+        if not os.path.exists(p):
             raise CzipError(EXIT_NOT_FOUND, f"找不到输入: {p}")
 
     # 4) 输出路径 + 改名避让
@@ -195,35 +204,41 @@ def _compress_zip(inputs, out, encrypt, pw):
         with pyzipper.AESZipFile(out, "w", compression=pyzipper.ZIP_DEFLATED,
                                  encryption=pyzipper.WZ_AES) as zf:
             zf.setpassword(pw.encode("utf-8"))
-            _write_zip_entries(zf, entries, encrypt_dirs=False)
+            _write_zip_entries(zf, entries)
         return
     # none：标准库，Windows 原生可解的 DEFLATE
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        _write_zip_entries(zf, entries, encrypt_dirs=False)
+        _write_zip_entries(zf, entries)
 
 
-def _write_zip_entries(zf, entries, encrypt_dirs):
+def _write_zip_entries(zf, entries):
     for src, arc, is_dir in entries:
         if is_dir:
-            # 目录条目：空内容。pyzipper 下不给目录加密（用未加密 ZipInfo）。
-            zi = zipfile.ZipInfo(arc)
-            zf.writestr(zi, b"")
+            zf.writestr(zipfile.ZipInfo(arc), b"")  # 空目录条目：空内容
         else:
             zf.write(src, arc)
 
 
 def _compress_7z(inputs, out, encrypt, pw):
+    # py7zr 默认存 symlink 本身（实测），违背 §1.3.1「三格式一致跟随链接存目标内容」，
+    # 故走 collect_entries 并对软链取 realpath，与 zip/targz 的解引用行为对齐。
     py7zr = _require("py7zr")
-    kw = {}
-    if encrypt == "aes":
-        kw = {"password": pw}
-    with py7zr.SevenZipFile(out, "w", **kw) as z:
-        for inp in inputs:
-            base = os.path.basename(os.path.normpath(inp))
-            if os.path.isdir(inp):
-                z.writeall(inp, arcname=base)
-            else:
-                z.write(inp, arcname=base)
+    kw = {"password": pw} if encrypt == "aes" else {}
+    entries = collect_entries(inputs)
+    empty_dir = None
+    try:
+        with py7zr.SevenZipFile(out, "w", **kw) as z:
+            for src, arc, is_dir in entries:
+                if is_dir:
+                    if empty_dir is None:
+                        empty_dir = tempfile.mkdtemp(prefix=".czip-7z-")
+                    z.write(empty_dir, arcname=arc.rstrip("/"))  # 空目录占位
+                else:
+                    real = os.path.realpath(src) if os.path.islink(src) else src
+                    z.write(real, arcname=arc)
+    finally:
+        if empty_dir:
+            _rmtree(empty_dir)
 
 
 def _compress_targz(inputs, out):
@@ -269,29 +284,60 @@ def do_extract(args, pw):
         # 生成 <name>/<name>/... 嵌套，不会覆盖源目录里的直接文件，故原地合并安全。
         target = os.path.join(os.path.dirname(os.path.abspath(archive)), sub)
 
-    if fmt == "zip":
-        _extract_zip(archive, target, pw)
-    elif fmt == "7z":
-        _extract_7z(archive, target, pw)
-    elif fmt == "targz":
-        _extract_targz(archive, target)
-    else:
-        _extract_rar(archive, target, pw)
+    extractors = {"zip": _extract_zip, "7z": _extract_7z,
+                  "targz": _extract_targz, "rar": _extract_rar}
+    # 数据安全红线：先解到唯一临时兄弟目录，全程成功才改名/合并到 target；
+    # 任何失败（密码错/损坏/tar-slip 拒绝）只删临时目录，绝不碰 target 及其已有内容。
+    # （target 常是用户源目录本身，旧实现 _rmtree(target) 会丢数据。）
+    parent = os.path.dirname(target)
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        raise CzipError(EXIT_INTERNAL, "写入失败")
+    tmp = tempfile.mkdtemp(prefix=".czip-extract-", dir=parent)
+    try:
+        extractors[fmt](archive, tmp, pw)
+    except BaseException:
+        _rmtree(tmp)
+        raise
+    try:
+        _merge_into(tmp, target)
+    finally:
+        _rmtree(tmp)  # 合并后 tmp 已空（或已被整体改名而不存在）
 
     print(target)
     return EXIT_OK
 
 
-def _assert_safe_members(names, target):
-    """逐成员校验解出真实路径落在 target 内，含 ../ 或绝对路径 → 拒绝（tar-slip）。"""
-    base = os.path.abspath(target)
+def _merge_into(src, dst):
+    """把 src 目录内容落到 dst。dst 不存在→整体改名（廉价原子）；已存在→逐项合并。
+    ponytail: 合并遇同名文件用 os.replace 覆盖，仅默认原地解压且外部无前缀扁平包才可能触发；
+    本工具自带顶层前缀极少冲突。要严格不覆盖再给冲突项加避让。"""
+    if not os.path.exists(dst):
+        os.rename(src, dst)
+        return
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        s = os.path.join(src, name)
+        d = os.path.join(dst, name)
+        if os.path.isdir(s) and not os.path.islink(s) \
+                and os.path.isdir(d) and not os.path.islink(d):
+            _merge_into(s, d)
+        else:
+            os.replace(s, d)
+
+
+def _assert_safe_members(names, dest):
+    """逐成员校验解出真实路径落在 dest 内，含 ../ 或绝对路径 → 拒绝（tar-slip）。
+    在写盘前调用：拒绝时临时目录尚空，逃逸成员绝不落地。"""
+    base = os.path.abspath(dest)
     for name in names:
-        dest = os.path.abspath(os.path.join(base, name))
-        if dest != base and not dest.startswith(base + os.sep):
+        real = os.path.abspath(os.path.join(base, name))
+        if real != base and not real.startswith(base + os.sep):
             raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
 
 
-def _extract_zip(archive, target, pw):
+def _extract_zip(archive, dest, pw):
     pyzipper = _require("pyzipper")
     try:
         zf = pyzipper.AESZipFile(archive)
@@ -305,67 +351,63 @@ def _extract_zip(archive, target, pw):
             zf.setpassword(pw.encode("utf-8"))
         # zipfile/pyzipper extract 内建净化 .. 与绝对路径，无需手动 tar-slip 校验
         try:
-            os.makedirs(target, exist_ok=True)
-            zf.extractall(target)
+            zf.extractall(dest)
         except RuntimeError:
             # pyzipper/zipfile 密码错误（ZipCrypto check-byte 或 AES 校验失败）抛 RuntimeError
-            _rmtree(target)
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
         except (zipfile.BadZipFile, pyzipper.BadZipFile, zlib.error, EOFError):
-            _rmtree(target)
+            # 加密包能打开中央目录、却在解压成员时失败：绝大概率是密码错——
+            # ZipCrypto check-byte 有 1/256 漏网概率，放行后解出乱数据 → 解压/CRC 失败。
+            # 未加密包同样失败才判整体损坏。
+            if encrypted:
+                raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
 
-def _extract_7z(archive, target, pw):
+def _extract_7z(archive, dest, pw):
     py7zr = _require("py7zr")
     try:
         with py7zr.SevenZipFile(archive, "r", password=pw or None) as z:
-            _assert_safe_members(z.getnames(), target)
+            _assert_safe_members(z.getnames(), dest)
             if z.needs_password() and not pw:
                 raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
-            os.makedirs(target, exist_ok=True)
-            z.extractall(target)
+            z.extractall(dest)
     except CzipError:
         raise
     except py7zr.exceptions.PasswordRequired:
         raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
     except py7zr.exceptions.Bad7zFile:
-        _rmtree(target)
         raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
-    except Exception as e:  # noqa: BLE001 — 未知解压异常统一归损坏/密码
-        _rmtree(target)
+    except Exception as e:  # noqa: BLE001 — 未知解压异常按密码/损坏归类
         if _looks_like_password_error(e):
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
         raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
 
 def _looks_like_password_error(exc):
-    s = (str(exc) + type(exc).__name__).lower()
-    return "password" in s or "crc" in s or "decrypt" in s or "mac" in s
+    """只认明确的密码/解密失败为 4；CRC/损坏类归 1（INTERFACE §4.2）。"""
+    s = (str(exc) + " " + type(exc).__name__).lower()
+    return "password" in s or "decrypt" in s
 
 
-def _extract_targz(archive, target):
+def _extract_targz(archive, dest, pw=None):
     import tarfile
     try:
         with tarfile.open(archive, "r:gz") as tar:
             members = tar.getmembers()
             names = [m.name for m in members]
             names += [m.linkname for m in members if m.linkname]
-            _assert_safe_members(names, target)  # 校验后才落地
-            os.makedirs(target, exist_ok=True)
-            tar.extractall(target)
+            _assert_safe_members(names, dest)  # 校验后才落地
+            tar.extractall(dest)
     except CzipError:
-        _rmtree(target)
         raise
     except tarfile.TarError:
-        _rmtree(target)
         raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
     except OSError:
-        _rmtree(target)
         raise CzipError(EXIT_INTERNAL, "写入失败")
 
 
-def _extract_rar(archive, target, pw):
+def _extract_rar(archive, dest, pw):
     rarfile = _require("rarfile")
     if not shutil.which("unar") and not shutil.which("unrar") \
             and not shutil.which("bsdtar"):
@@ -379,17 +421,15 @@ def _extract_rar(archive, target, pw):
         if rf.needs_password():
             # 带密码 rar 不支持：会把密码落进 unar argv/ps（PLAN R2）
             raise CzipError(EXIT_UNSUPPORTED, "不支持带密码的 rar 解压")
-        _assert_safe_members(rf.namelist(), target)
+        _assert_safe_members(rf.namelist(), dest)
         try:
-            os.makedirs(target, exist_ok=True)
-            rf.extractall(target)
+            rf.extractall(dest)
         except rarfile.Error:
-            _rmtree(target)
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
 
 def _rmtree(path):
-    """清理本次解压建的目录（失败回滚，不碰用户已有文件——仅删我们刚建的）。"""
+    """删掉我们建的临时目录（仅删本工具产物，不碰用户已有文件）。"""
     try:
         if os.path.isdir(path):
             shutil.rmtree(path)
