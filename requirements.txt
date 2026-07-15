@@ -1,0 +1,7 @@
+# compress-zip pip 依赖（版本为开发机实测通过的版本，2026-07-15）
+# 系统工具另需：brew install unar（rar 解压后端）
+pyzipper==0.4.0   # zip AES 创建 + zip 全场景解压读取（普通/AES/ZipCrypto）
+py7zr==1.1.3      # 7z 创建（含 AES）与解压
+rarfile==4.3      # rar 解压调度层（需系统 unar 后端）
+# ZipCrypto 加密写入为手搓（zipcrypto.py），零新依赖
+# zip 不加密 / tar.gz 走标准库 zipfile / tarfile，无需 pip
