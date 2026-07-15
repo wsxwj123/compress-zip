@@ -503,11 +503,12 @@ def _collect_members(source):
         segs = _member_segments(m.name)
         if not segs:
             continue  # 根条目/空名
-        if any(_is_macos_junk(s) for s in segs):
-            continue  # 不落地 macOS 元数据（§1.3.2/§2.3）
-        # Zip Slip：规范化后不得含 .. 或以 / 开头（绝对路径）
+        # Zip Slip 先校验（纵深防御）：含 .. 或以 / 开头（绝对路径）→ 整包拒绝，
+        # 即便该成员是 macOS 元数据也不放过（否则 __MACOSX/../evil 会被静默跳过）
         if _norm_member(m.name).startswith("/") or ".." in segs:
             raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
+        if any(_is_macos_junk(s) for s in segs):
+            continue  # 校验通过的 macOS 元数据不落地（§1.3.2/§2.3）
         result.append((segs, m.is_dir, m))
     return result
 
