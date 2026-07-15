@@ -277,66 +277,21 @@ def _detect_format(archive):
     return None
 
 
-def do_extract(args, pw):
-    archive = args.archive
-    if not os.path.lexists(archive):
-        raise CzipError(EXIT_NOT_FOUND, f"找不到输入: {archive}")
+class _M:
+    """规范化后的成员描述（跨格式统一）。h 为格式原生句柄，供 read 用。"""
+    __slots__ = ("name", "is_dir", "is_link", "h")
 
-    fmt = _detect_format(archive)
-    if fmt is None:
-        raise CzipError(EXIT_UNSUPPORTED, "不支持的压缩包格式")
-
-    sub = _archive_basename(os.path.basename(archive))
-    if args.dest is not None:
-        # 显式 --dest：目标子文件夹已存在则改名避让，绝不覆盖用户已有内容（§2.3）
-        target = avoid_collision(os.path.join(os.path.abspath(args.dest), sub))
-    else:
-        # 默认原地解压（dest = 压缩包所在目录）。同名目录通常是本工具压缩的源目录，
-        # 本工具的 arcname 都带顶层前缀（<name>/...），解进 <parent>/<name>/ 只会
-        # 生成 <name>/<name>/... 嵌套，不会覆盖源目录里的直接文件，故原地合并安全。
-        target = os.path.join(os.path.dirname(os.path.abspath(archive)), sub)
-
-    extractors = {"zip": _extract_zip, "7z": _extract_7z,
-                  "targz": _extract_targz, "rar": _extract_rar}
-    # 数据安全红线：先解到唯一临时兄弟目录，全程成功才改名/合并到 target；
-    # 任何失败（密码错/损坏/tar-slip 拒绝）只删临时目录，绝不碰 target 及其已有内容。
-    # （target 常是用户源目录本身，旧实现 _rmtree(target) 会丢数据。）
-    parent = os.path.dirname(target)
-    try:
-        os.makedirs(parent, exist_ok=True)
-    except OSError:
-        raise CzipError(EXIT_INTERNAL, "写入失败")
-    tmp = tempfile.mkdtemp(prefix=".czip-extract-", dir=parent)
-    try:
-        extractors[fmt](archive, tmp, pw)
-    except BaseException:
-        _rmtree(tmp)
-        raise
-    try:
-        _merge_into(tmp, target)
-    finally:
-        _rmtree(tmp)  # 合并后 tmp 已空（或已被整体改名而不存在）
-
-    print(target)
-    return EXIT_OK
+    def __init__(self, name, is_dir, is_link, h):
+        self.name = name
+        self.is_dir = is_dir
+        self.is_link = is_link
+        self.h = h
 
 
-def _merge_into(src, dst):
-    """把 src 目录内容落到 dst。dst 不存在→整体改名（廉价原子）；已存在→逐项合并。
-    ponytail: 合并遇同名文件用 os.replace 覆盖，仅默认原地解压且外部无前缀扁平包才可能触发；
-    本工具自带顶层前缀极少冲突。要严格不覆盖再给冲突项加避让。"""
-    if not os.path.exists(dst):
-        os.rename(src, dst)
-        return
-    os.makedirs(dst, exist_ok=True)
-    for name in os.listdir(src):
-        s = os.path.join(src, name)
-        d = os.path.join(dst, name)
-        if os.path.isdir(s) and not os.path.islink(s) \
-                and os.path.isdir(d) and not os.path.islink(d):
-            _merge_into(s, d)
-        else:
-            os.replace(s, d)
+def _looks_like_password_error(exc):
+    """只认明确的密码/解密失败为 4；CRC/损坏类归 1（INTERFACE §4.2）。"""
+    s = (str(exc) + " " + type(exc).__name__).lower()
+    return "password" in s or "decrypt" in s
 
 
 def _assert_safe_members(names, dest):
@@ -349,95 +304,311 @@ def _assert_safe_members(names, dest):
             raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
 
 
-def _extract_zip(archive, dest, pw):
-    pyzipper = _require("pyzipper")
-    try:
-        zf = pyzipper.AESZipFile(archive)
-    except (zipfile.BadZipFile, pyzipper.BadZipFile, OSError):
-        raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
-    with zf:
-        encrypted = any(zi.flag_bits & 0x1 for zi in zf.infolist())
-        if encrypted and not pw:
+class _ZipSource:
+    def __init__(self, archive, pw):
+        pyzipper = _require("pyzipper")
+        try:
+            self.zf = pyzipper.AESZipFile(archive)
+        except (zipfile.BadZipFile, pyzipper.BadZipFile, OSError):
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        self.encrypted = any(zi.flag_bits & 0x1 for zi in self.zf.infolist())
+        if self.encrypted and not pw:
+            self.zf.close()
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
         if pw:
-            zf.setpassword(pw.encode("utf-8"))
-        # zipfile/pyzipper extract 内建净化 .. 与绝对路径，无需手动 tar-slip 校验
+            self.zf.setpassword(pw.encode("utf-8"))
+        self.entries = []
+        for zi in self.zf.infolist():
+            mode = (zi.external_attr >> 16) & 0o170000
+            self.entries.append(_M(zi.filename, zi.is_dir(),
+                                   mode == 0o120000, zi))
+
+    def prepare(self):
+        pass
+
+    def read(self, m):
         try:
-            zf.extractall(dest)
+            return self.zf.read(m.h)
         except RuntimeError:
-            # pyzipper/zipfile 密码错误（ZipCrypto check-byte 或 AES 校验失败）抛 RuntimeError
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
-        except (zipfile.BadZipFile, pyzipper.BadZipFile, zlib.error, EOFError):
-            # 加密包能打开中央目录、却在解压成员时失败：绝大概率是密码错——
-            # ZipCrypto check-byte 有 1/256 漏网概率，放行后解出乱数据 → 解压/CRC 失败。
-            # 未加密包同样失败才判整体损坏。
-            if encrypted:
+        except (zipfile.BadZipFile, zlib.error, EOFError):
+            # 加密包中央目录可读、解成员失败：绝大概率密码错（ZipCrypto check-byte
+            # 有 1/256 漏网），放行后解出乱数据 → 解压/CRC 失败。未加密才判损坏。
+            if self.encrypted:
                 raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
+    def close(self):
+        self.zf.close()
 
-def _extract_7z(archive, dest, pw):
-    py7zr = _require("py7zr")
-    try:
-        with py7zr.SevenZipFile(archive, "r", password=pw or None) as z:
-            _assert_safe_members(z.getnames(), dest)
-            if z.needs_password() and not pw:
-                raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
-            z.extractall(dest)
-    except CzipError:
-        raise
-    except py7zr.exceptions.PasswordRequired:
-        raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
-    except py7zr.exceptions.Bad7zFile:
-        raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
-    except Exception as e:  # noqa: BLE001 — 未知解压异常按密码/损坏归类
-        if _looks_like_password_error(e):
+
+class _TarSource:
+    def __init__(self, archive, pw):
+        import tarfile
+        self._tarfile = tarfile
+        try:
+            self.tar = tarfile.open(archive, "r:gz")
+            members = self.tar.getmembers()
+        except tarfile.TarError:
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        except OSError:
+            raise CzipError(EXIT_INTERNAL, "写入失败")
+        self.entries = []
+        for m in members:
+            is_link = m.issym() or m.islnk()
+            if not (m.isreg() or m.isdir() or is_link):
+                continue  # 忽略设备/管道等非常规成员
+            self.entries.append(_M(m.name, m.isdir(), is_link, m))
+
+    def prepare(self):
+        pass
+
+    def read(self, m):
+        try:
+            f = self.tar.extractfile(m.h)
+            return f.read() if f is not None else b""
+        except (self._tarfile.TarError, OSError):
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+
+    def close(self):
+        self.tar.close()
+
+
+class _SevenZipSource:
+    """py7zr 1.1.3 无逐成员读接口，先读元数据校验，通过后整体解到临时目录再取内容。"""
+
+    def __init__(self, archive, pw):
+        py7zr = _require("py7zr")
+        self._py7zr = py7zr
+        try:
+            self.z = py7zr.SevenZipFile(archive, "r", password=pw or None)
+        except py7zr.exceptions.PasswordRequired:
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
-        raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        except py7zr.exceptions.Bad7zFile:
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        try:
+            need_pw = self.z.needs_password()
+        except Exception:  # noqa: BLE001
+            need_pw = False
+        if need_pw and not pw:
+            self.z.close()
+            raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
+        self.entries = []
+        for f in self.z.files:
+            self.entries.append(_M(f.filename, f.is_directory,
+                                   f.is_symlink, f))
+        self.raw = None
+
+    def prepare(self):
+        # 校验已通过（无 .. / 链接），再整体解出到隔离的临时目录。
+        self.raw = tempfile.mkdtemp(prefix=".czip-7z-raw-")
+        try:
+            self.z.extractall(self.raw)
+        except self._py7zr.exceptions.PasswordRequired:
+            raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
+        except self._py7zr.exceptions.Bad7zFile:
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        except Exception as e:  # noqa: BLE001 — 未知解压异常按密码/损坏归类
+            if _looks_like_password_error(e):
+                raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+
+    def read(self, m):
+        p = os.path.join(self.raw, *m.name.split("/"))
+        with open(p, "rb") as f:
+            return f.read()
+
+    def close(self):
+        try:
+            self.z.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if self.raw:
+            _rmtree(self.raw)
 
 
-def _looks_like_password_error(exc):
-    """只认明确的密码/解密失败为 4；CRC/损坏类归 1（INTERFACE §4.2）。"""
-    s = (str(exc) + " " + type(exc).__name__).lower()
-    return "password" in s or "decrypt" in s
+class _RarSource:
+    def __init__(self, archive, pw):
+        rarfile = _require("rarfile")
+        self._rarfile = rarfile
+        if not shutil.which("unar") and not shutil.which("unrar") \
+                and not shutil.which("bsdtar"):
+            raise CzipError(EXIT_DEP,
+                            "解压 rar 需要 unar，请先运行 brew install unar")
+        try:
+            self.rf = rarfile.RarFile(archive)
+        except rarfile.Error:
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        if self.rf.needs_password():
+            # 带密码 rar 不支持：会把密码落进 unar argv/ps（PLAN R2）
+            self.rf.close()
+            raise CzipError(EXIT_UNSUPPORTED, "不支持带密码的 rar 解压")
+        self.entries = []
+        for ri in self.rf.infolist():
+            is_link = getattr(ri, "file_redir", None) is not None
+            self.entries.append(_M(ri.filename, ri.isdir(), is_link, ri))
+
+    def prepare(self):
+        pass
+
+    def read(self, m):
+        try:
+            return self.rf.read(m.h)
+        except self._rarfile.Error:
+            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+
+    def close(self):
+        self.rf.close()
 
 
-def _extract_targz(archive, dest, pw=None):
-    import tarfile
+_SOURCES = {"zip": _ZipSource, "7z": _SevenZipSource,
+            "targz": _TarSource, "rar": _RarSource}
+
+
+def _norm_member(name):
+    """成员名规范化：统一分隔符为 /（反斜杠归一化在安全提交里加）。"""
+    return name
+
+
+def _member_segments(name):
+    """规范化成员名 → 干净的路径段列表（去掉空段/单点）。"""
+    return [s for s in _norm_member(name).split("/") if s and s != "."]
+
+
+def do_extract(args, pw):
+    archive = args.archive
+    if not os.path.lexists(archive):
+        raise CzipError(EXIT_NOT_FOUND, f"找不到输入: {archive}")
+
+    fmt = _detect_format(archive)
+    if fmt is None:
+        raise CzipError(EXIT_UNSUPPORTED, "不支持的压缩包格式")
+
+    dest = (os.path.abspath(args.dest) if args.dest
+            else os.path.dirname(os.path.abspath(archive)))
+    pkgname = _archive_basename(os.path.basename(archive))
+
+    source = _SOURCES[fmt](archive, pw)
     try:
-        with tarfile.open(archive, "r:gz") as tar:
-            members = tar.getmembers()
-            names = [m.name for m in members]
-            names += [m.linkname for m in members if m.linkname]
-            _assert_safe_members(names, dest)  # 校验后才落地
-            tar.extractall(dest)
-    except CzipError:
-        raise
-    except tarfile.TarError:
-        raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        landed = _place_members(source, dest, args.layout, pkgname)
+    finally:
+        source.close()
+
+    print(landed)
+    return EXIT_OK
+
+
+def _collect_members(source):
+    """过滤 macOS 元数据、校验路径合法性，返回 [(segments, is_dir, m)]。"""
+    result = []
+    for m in source.entries:
+        segs = _member_segments(m.name)
+        if not segs:
+            continue  # 根条目/空名
+        if any(_is_macos_junk(s) for s in segs):
+            continue  # 不落地 macOS 元数据（§1.3.2/§2.3）
+        # Zip Slip：规范化后不得含 .. 或以 / 开头（绝对路径）
+        if _norm_member(m.name).startswith("/") or ".." in segs:
+            raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
+        result.append((segs, m.is_dir, m))
+    return result
+
+
+def _top_items(members):
+    """按第一路径段去重，保持出现顺序（§2.3 顶层项判据）。"""
+    tops = []
+    for segs, _, _ in members:
+        top = segs[0]
+        if top not in tops:
+            tops.append(top)
+    return tops
+
+
+def _flatten_rename_map(dest, tops):
+    """铺开布局：为每个顶层项在 dest 下定最终名（撞名 foo→foo-1），整项前缀重写。"""
+    taken = set()
+    mapping = {}
+    for t in tops:
+        cand = os.path.basename(avoid_collision(os.path.join(dest, t)))
+        if cand in taken:  # 与本批已定名撞车（极少见），继续插 -N 到唯一
+            stem, ext = _split_archive_ext(t)
+            i = 1
+            while True:
+                cand = f"{stem}-{i}{ext}"
+                if cand not in taken and \
+                        not os.path.exists(os.path.join(dest, cand)):
+                    break
+                i += 1
+        taken.add(cand)
+        mapping[t] = cand
+    return mapping
+
+
+def _place_members(source, dest, layout, pkgname):
+    """按 §2.3 落地：顶层项计数 → 布局 → 顶层项级前缀重写 → 写入。
+    全程先写隔离临时目录，成功才 rename/move 进 dest；失败只删临时目录，
+    绝不删除/覆盖 dest 已有内容。"""
+    members = _collect_members(source)
+    tops = _top_items(members)
+    if not tops:
+        raise CzipError(EXIT_INTERNAL, "压缩包为空")
+
+    n = len(tops)
+    wrap = (layout == "folder") or (layout == "auto" and n >= 2)
+
+    try:
+        os.makedirs(dest, exist_ok=True)
     except OSError:
         raise CzipError(EXIT_INTERNAL, "写入失败")
 
+    if wrap:
+        landing = avoid_collision(os.path.join(dest, pkgname))
+        rename_map = None  # 套壳内为全新目录，顶层项无需再改名
+    else:
+        landing = dest
+        rename_map = _flatten_rename_map(dest, tops)
 
-def _extract_rar(archive, dest, pw):
-    rarfile = _require("rarfile")
-    if not shutil.which("unar") and not shutil.which("unrar") \
-            and not shutil.which("bsdtar"):
-        raise CzipError(EXIT_DEP,
-                        "解压 rar 需要 unar，请先运行 brew install unar")
+    staging = tempfile.mkdtemp(prefix=".czip-extract-", dir=dest)
     try:
-        rf = rarfile.RarFile(archive)
-    except rarfile.Error:
-        raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
-    with rf:
-        if rf.needs_password():
-            # 带密码 rar 不支持：会把密码落进 unar argv/ps（PLAN R2）
-            raise CzipError(EXIT_UNSUPPORTED, "不支持带密码的 rar 解压")
-        _assert_safe_members(rf.namelist(), dest)
-        try:
-            rf.extractall(dest)
-        except rarfile.Error:
-            raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
+        source.prepare()
+        for segs, is_dir, m in members:
+            out_segs = list(segs)
+            if rename_map is not None:
+                out_segs[0] = rename_map[segs[0]]
+            target = os.path.join(staging, *out_segs)
+            if is_dir:
+                _safe_makedirs(target)
+            else:
+                _safe_makedirs(os.path.dirname(target))
+                data = source.read(m)
+                with open(target, "wb") as f:
+                    f.write(data)
+
+        if wrap:
+            os.rename(staging, landing)          # 整壳一次改名（廉价原子）
+        else:
+            for t in tops:                        # 逐顶层项移入 dest
+                os.rename(os.path.join(staging, rename_map[t]),
+                          os.path.join(dest, rename_map[t]))
+            os.rmdir(staging)
+    except CzipError:
+        _rmtree(staging)
+        raise
+    except OSError:
+        _rmtree(staging)
+        raise CzipError(EXIT_INTERNAL, "写入失败")
+    except BaseException:
+        _rmtree(staging)
+        raise
+
+    return landing
+
+
+def _safe_makedirs(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        raise CzipError(EXIT_INTERNAL, "写入失败")
 
 
 def _rmtree(path):
@@ -463,6 +634,8 @@ def build_parser():
     c.add_argument("paths", nargs="+")
 
     e = sub.add_parser("extract", help="解压")
+    e.add_argument("--layout", choices=["auto", "flatten", "folder"],
+                   default="auto")
     e.add_argument("--dest")
     e.add_argument("archive")
     return p
