@@ -466,8 +466,9 @@ _SOURCES = {"zip": _ZipSource, "7z": _SevenZipSource,
 
 
 def _norm_member(name):
-    """成员名规范化：统一分隔符为 /（反斜杠归一化在安全提交里加）。"""
-    return name
+    """成员名规范化：反斜杠（Windows 风格）统一转 /，再解析层级。
+    转换后同样过 Zip Slip 全部校验（§2.3）。"""
+    return name.replace("\\", "/")
 
 
 def _member_segments(name):
@@ -499,7 +500,12 @@ def do_extract(args, pw):
 
 
 def _collect_members(source):
-    """过滤 macOS 元数据、校验路径合法性，返回 [(segments, is_dir, m)]。"""
+    """过滤 macOS 元数据、拒绝链接成员、校验路径合法性，返回 [(segments, is_dir, m)]。"""
+    # 先整包扫描拒绝一切软/硬链接成员（§2.3 安全红线）：链接可先落一条指向 dest
+    # 外的链，后续成员顺链被 OS 写到目录外，纯字符串校验拦不住。拒绝须早于任何写入。
+    for m in source.entries:
+        if m.is_link:
+            raise CzipError(EXIT_INTERNAL, "压缩包含链接成员，已拒绝")
     result = []
     for m in source.entries:
         segs = _member_segments(m.name)
@@ -569,6 +575,7 @@ def _place_members(source, dest, layout, pkgname):
         rename_map = _flatten_rename_map(dest, tops)
 
     staging = tempfile.mkdtemp(prefix=".czip-extract-", dir=dest)
+    base_real = os.path.realpath(staging)
     try:
         source.prepare()
         for segs, is_dir, m in members:
@@ -576,6 +583,11 @@ def _place_members(source, dest, layout, pkgname):
             if rename_map is not None:
                 out_segs[0] = rename_map[segs[0]]
             target = os.path.join(staging, *out_segs)
+            # 即将写入前对真实落点复核仍以落地目录为前缀（§2.3）：配合上面拒链接，
+            # 堵住「链接先落地、后续成员顺链逃逸」——纯预扫拦不住的路径。
+            real = os.path.realpath(target)
+            if real != base_real and not real.startswith(base_real + os.sep):
+                raise CzipError(EXIT_INTERNAL, "压缩包含非法路径，已拒绝")
             if is_dir:
                 _safe_makedirs(target)
             else:
