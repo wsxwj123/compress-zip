@@ -2,112 +2,116 @@
 
 > 全部基于 INTERFACE.md 的黑盒契约：子进程调 `czip.py` → 查退出码 / stdout / stderr / 产物。
 > 密码只走环境变量 `COMPRESS_PW`，不 import 内部模块。
-> 位置：`tests/acceptance/`，跑法：`pytest tests/acceptance/`（未实现时全部 skip，不报错）。
-> 标 ★ = 替用户想到的（需求没明说、但按常理必须对）。
-> 依赖第三方库的用例用 `importorskip` 保护；核心（中文 zip / 错误契约 / 不覆盖 / zipcrypto）纯 stdlib 直接可跑。
+> 位置：`tests/acceptance/`，跑法：`pytest tests/acceptance/`。
+> 标 ★ = 替用户想到的（需求没明说、但按常理必须对）；标 【改】/【新】= 本轮解压逻辑重构后改动/新增。
+> 依赖第三方库的用例用 `importorskip` 保护；核心（中文 zip / 错误契约 / 不覆盖 / zipcrypto / 布局 / 安全）纯 stdlib 直接可跑。
+> 当前共 **82 条**（含 rar 样本 skip 1 条、slow 2 条）。
 
 格式：场景 / 怎么操作 / 预期看到什么
 
 ---
 
-## test_chinese.py — 头号验收（中文名不乱码，项目成败关键，6 条）
-- 中文名压 zip(none) / 用 zipfile 打开生成包 / 每个中文条目 flag_bits&0x800==0x800，中文名原样在包内
-- 中文名压 zip(aes) / 同上（需 pyzipper） / 加密不影响文件名头部，bit11 仍置位
-- 中文名压 zip(zipcrypto) / 同上（手搓路径，无第三方依赖） / bit11 置位、中文名正确
-- ★ 反向验不乱码 zip(none) / 读出的 basename 与原中文逐一相等 / 没走 cp437/gbk 乱码路径
-- ★ 反向验不乱码 zip(aes) / 同上 / 加密路径也不乱码
-- ★ 反向验不乱码 zip(zipcrypto) / 同上 / 手搓加密路径也不乱码
-  （中文集覆盖：纯中文、中英混、带空格、全角括号、emoji 文件名）
-
-## test_encrypt.py — 加解密闭环（10 条）
-- zip+none 往返 / 压后解、比对内容 / 退0，解出文件内容一致
-- zip+zipcrypto 往返 / 正确密码解 / 退0，内容一致（核心，无依赖）
-- zip+aes 往返 / 正确密码解（需 pyzipper） / 退0，内容一致
-- 7z+none 往返 / 需 py7zr / 退0，内容一致
-- 7z+aes 往返 / 需 py7zr / 退0，内容一致
-- targz+none 往返 / 压后解 / 退0，内容一致
-- zip+zipcrypto 错密码解 / COMPRESS_PW 给错值 / 退4，stderr 含"密码错误"
-- zip+aes 错密码解 / 需 pyzipper / 退4，含"密码错误"
-- ★ zip+zipcrypto 空密码解加密包 / COMPRESS_PW="" / 退4（加密包必须要密码）
-- ★ zip+aes 空密码解加密包 / 需 pyzipper / 退4
-
-## test_errors.py — 错误契约 §3/§4（21 条，纯 stdlib）
-- 缺 --format / compress 不给 --format / 退2，stderr 含 usage:
-- 缺 --encrypt / 不给 --encrypt / 退2，usage:
-- 非法 --format(rar) / / 退2，usage:
-- 非法 --encrypt(rc4) / / 退2，usage:
-- 无 PATH / 只给选项不给输入 / 退2，usage:
-- targz+aes / / 退5，"tar.gz 不支持加密"
-- targz+zipcrypto / / 退5，"tar.gz 不支持加密"
-- 7z+zipcrypto / / 退5，"7z 不支持 ZipCrypto 加密"
-- aes 空密码压缩 / COMPRESS_PW="" / 退4，"该加密方式需要密码，但未提供"
-- zipcrypto 空密码压缩 / 同上 / 退4，同串
-- ★ aes 未设 COMPRESS_PW 压缩 / 变量完全不存在 / 退4（"未设"也算空）
-- ★ zipcrypto 未设 COMPRESS_PW / 同上 / 退4
-- 输入不存在 / PATH 指向不存在文件 / 退3，"找不到输入"
-- 多输入其一不存在 / 一真一假 / 退3，"找不到输入"
-- 写入失败 / --out 指向不存在父目录 / 退1，"写入失败"
-- ★ 校验顺序：格式 vs 输入 / 非法 format + 不存在 PATH / 退2（format 先于 input）
-- ★ 校验顺序：密码 vs 输入 / 空密码 aes + 不存在 PATH / 退4（密码先于 input）
-- extract 缺 ARCHIVE / 只给 extract / 退2，usage:
-- extract 包不存在 / / 退3，"找不到输入"
-- extract 不支持格式 / .xyz 文件 / 退5，"不支持的压缩包格式"
-- extract 损坏包 / 真 zip 截断一半 / 退1，"压缩包损坏或不完整"，不崩栈
-
-## test_no_overwrite.py — 不删不覆盖 §1.4/§2.3（5 条，纯 stdlib）
-- 同名压两次三次 / 连压 3 次同一输入 / 依次 name.zip / name-1.zip / name-2.zip，前包都还在
-- --out 目标已存在 / --out 指到已占坑文件 / 生成 backup-1.zip，原文件字节不变
-- ★ 压缩不动源 / 压完比对源目录 / 源文件内容/存在性完全不变（只读输入）
-- 解压两次 / 同包解两次到同 dest / 落 name / name-1 两个子文件夹，都在
-- ★ 解压不覆盖占坑目录 / dest 下预置同名目录放文件 / 避让到 name-1，占坑文件不被动
-
-## test_extract.py — 解压主路径 §2（5 条）
-- zip 往返 / 默认 dest 解压 / 子文件夹=包去扩展名，落包所在父目录，内容一致
-- targz 往返 / / 包名 树.tar.gz，解出去掉整体扩展名，内容一致
-- 7z 往返 / 需 py7zr / 内容一致
-- --dest 指定 / 解到自选父目录 / 子文件夹落在 --dest 下，内容一致
-- ★ 空文件夹往返 / 压空目录再解 / 退0，解出后空目录仍保留
-
-## test_multifile.py — 多选 + 输出命名 §1.3（4 条，纯 stdlib）
-- 单文件命名 / 压单个 报告.txt / 包名 报告.txt.zip，落同目录
-- 单目录命名 / 压 资料/ / 包名 资料.zip
-- 同目录多选 / 三文件同父目录 / 包名=父目录名，落该目录，解出三文件齐全
-- 跨目录多选 / dir1/首个 + dir2/第二 / 落 dir1、包名=首个.txt.zip，解出两文件齐全
-
-## test_security.py — 安全边界 §2.3/§5.7（5 条）
-- tar-slip ../ / 构造含 ../evil 成员的 tar.gz / 退1，"压缩包含非法路径"
-- tar-slip ../../ / 同 / 退1，同串
-- tar-slip sub/../../ / 同 / 退1，同串
-  （★ 以上三条都额外断言：dest 之外确实无逃逸文件落地，不只看退出码）
-- 绝对路径成员 / 成员名 /tmp/... / 退1，"压缩包含非法路径"，且该绝对路径无文件
-- 带密码 rar 拒绝 / 需预置加密 rar 样本 / 退5，"不支持带密码的 rar 解压"（无样本则 skip 并说明）
-
-## test_extract_failure_safety.py — 解压失败数据安全（2 条，补 code-review 发现的删数据盲区）
-- ★ 原地解压密码错 / 源目录含文件、压成加密包、原地解压时输错密码 / 退4，且已有同名目录+文件原样保留（绝不删）
-- ★ 原地解压 tar-slip / 已有同名目录、解含 ../ 的恶意包 / 退1，且已有同名目录保留、逃逸文件零落地
-
-## test_edge.py — 边界/替用户想到的（6 条）
-- ★ 名字带空格 / "文件 名.txt" 压解 / 往返内容一致
-- ★ 名字带 emoji / "🚀火箭.txt" 压解 / 往返内容一致
-- ★ symlink 跟随(文件) / 输入含指向文件的软链 / 解出存的是目标内容、普通文件
-- ★ symlink 跟随(目录) / 软链指向目录 / 解出含目录内文件内容
-- ZipCrypto >4GiB 退5 / 稀疏文件桩造 4GiB+1 逻辑体积 / 退5，"ZipCrypto 不支持超过 4GB..."（标 slow）
-- ★ AES >4GiB 无限制(对照) / 同稀疏桩走 aes / 绝不触发 4GiB 组合限制（标 slow，需 pyzipper）
+## 本轮重构一句话
+解压端从"永远套一层以包名命名的子文件夹"改成**智能布局**：包里只有 1 个顶层项就直接铺开、有 ≥2 个才套壳；数顶层项按"成员第一路径段去重"，不是数文件条数。配套：压缩端多选默认叫"归档"、包内不再加顶层前缀、不写 macOS 垃圾文件；解压端新增软/硬链接成员拒绝、Zip Slip 全格式防护、反斜杠归一化。**因此凡是"解压后落到哪个路径"的断言都按新布局重写了**（铺开时 stdout=目标目录本身，套壳时才是子文件夹）。
 
 ---
 
-## 覆盖矩阵小结
-| 方向 | 覆盖 |
+## test_multifile.py — 压缩命名【改】+ 包内结构【新】（7 条，纯 stdlib）
+- 单选文件命名 / 压单个 报告.txt / 包名 报告.txt.zip，落同目录
+- 单选目录命名 / 压 资料/ / 包名 资料.zip
+- 【改】同目录多选默认名 / 三文件同父目录 / **包名=归档.zip**（不再是父目录名），落第一个输入的父目录；解出套 归档/ 壳、三文件齐全
+- 【改】跨目录多选默认名 / dir1/首个 + dir2/第二 / **包名=归档.zip**，落第一个输入父目录 dir1，解出两文件齐全
+- 【新】包内无顶层前缀 / 选文件夹 foo 压 zip、用 zipfile 读 namelist / 顶层项集合={foo}，无 foo/foo/ 套娃
+- 【新】多选包内不套壳 / 选两文件压 zip / 包内顶层直接是两项自身名，不含额外 归档/ 前缀
+- 【新】不写 macOS 元数据 / 目录里塞个 .DS_Store 再压 / 包内无 .DS_Store、无 __MACOSX，正常文件在
+
+## test_extract.py — 解压主路径 + 智能布局 auto【新，重点】（9 条）
+- 【改】zip 往返 / 单文件夹装多文件压后默认解 / **1 顶层项→铺开**：stdout=dest，dest/树/ 在，内容一致
+- 【改】targz 往返 / 同上 / 包名 树.tar.gz，铺开后 dest/树/ 在，内容一致
+- 【改】7z 往返 / 需 py7zr / 铺开后 dest/树/ 在，内容一致
+- 【改】--dest 指定 / 解到自选父目录 / 铺开进该目录，dest/树/ 在
+- 【新】★重点 单文件夹装多文件→铺开 / 包顶层单项 包/、内含3文件、解压 / **auto 铺开不套壳**（证明按第一路径段去重、非 namelist 条数），无 包/包 双层
+- 【新】≥2 顶层项→套壳 / 多选包 归档.zip 解压 / 套 dest/归档/，两文件在壳里
+- 【新】空包退1 / 0 成员的 zip 解压 / 退1，stderr 含"压缩包为空"
+- 【新】仅 .DS_Store 视为空包 / 包里只有 .DS_Store / 过滤后 0 顶层项→退1"压缩包为空"
+- ★空文件夹往返 / 压空目录再解 / 退0，空目录顶层项铺开后仍是空目录
+
+## test_layout.py — 手选布局【新】（4 条，纯 stdlib）
+- 【新】flatten 强制铺开 / 多顶层项包加 --layout flatten / 两文件直接落 dest，不套 归档/ 壳
+- 【新】folder 强制套壳 / 单顶层项包加 --layout folder / 无条件套 dest/单项/ 壳（壳内再是 单项/）
+- 【新】显式 auto = 默认 / --layout auto 与省略等价 / 单顶层项照样铺开
+- 【新】非法 --layout 值 / --layout wtf / 退2，argparse usage:
+
+## test_no_overwrite.py — 不删不覆盖 + 顶层项级改名【改】（6 条，纯 stdlib）
+- 压缩同名压两三次 / 连压3次同输入 / 依次 项目.zip / 项目-1.zip / 项目-2.zip，前包都在
+- 压缩 --out 占坑避让 / --out 指到已占坑文件 / 生成 backup-1.zip，占坑文件字节不变
+- ★压缩不动源 / 压完比对源目录 / 源内容/存在性完全不变
+- 【改】解压两次顶层项改名 / 同包 auto 解两次到同 dest / 铺开 stdout 都=dest；第二次顶层项前缀重写 包内容-1，首次内容不被覆盖
+- 【改】解压不覆盖占坑目录 / dest 预置同名顶层目录放文件 / 整项避让 包内容-1，占坑文件不被动
+- 【新】★重点 原地解自压包不 merge / **单文件夹装多文件**的 foo.zip 在源目录原地 auto 解 / 源 foo/ 每个文件零改动、新内容整项落 foo-1/**（专防退化成逐成员 merge 覆盖源）
+
+## test_security.py — 安全边界【改+新，重点】（11 条）
+- Zip Slip tar ../ ×3 形态 / 含 ../、../../、sub/../../ 成员的 tar.gz / 退1"压缩包含非法路径"，dest 外零落地
+- 绝对路径成员 / tar 成员名 /tmp/... / 退1"压缩包含非法路径"，该绝对路径无文件
+- 【新】Zip Slip zip ../ / zip 含 ../evil 成员 / 退1"压缩包含非法路径"，dest 外零落地
+- 【新】反斜杠越界 / zip 成员名 ..\..\evil / 归一化后仍越界→退1"压缩包含非法路径"，dest 外零落地
+- 【新】反斜杠合法归一化 / zip 成员名 top\sub\file.txt / 正常解成 top/sub/file.txt 目录层级，名字里无反斜杠
+- 【新】★重点 软链接顺链逃逸包 / tar：link→dest外目录 + 后续成员 link/pwned.txt / 退1"压缩包含链接成员"，dest 外 outside 目录零落地
+- 【新】软链相对越界 / tar：esc→../.. + esc/pwn.txt / 退1"压缩包含链接成员"，上级无 pwn.txt
+- 【新】硬链接成员 / tar：real.txt + 硬链 hl.txt→real.txt / 退1"压缩包含链接成员"
+- 带密码 rar / 需预置加密 rar 样本 / 退5"不支持带密码的 rar 解压"（无样本则 skip）
+
+## test_extract_failure_safety.py — 解压失败数据安全（2 条，未改，新契约下仍成立）
+- ★原地解压密码错 / 源目录含文件、压成加密包、原地解输错密码 / 退4，已有同名目录+文件原样保留（绝不删）
+- ★原地解压 tar-slip / 已有同名目录、解含 ../ 的恶意包 / 退1，已有同名目录保留、逃逸文件零落地
+
+## test_chinese.py — 头号验收（中文名不乱码，6 条，未改）
+- 中文名压 zip none/aes/zipcrypto / 用 zipfile 读头部 / 每个中文条目 flag_bits&0x800 置位、中文名原样在包内
+- ★ 反向验不乱码 none/aes/zipcrypto / 读出的 basename 与原中文逐一相等 / 没走 cp437/gbk 乱码路径
+  （中文集：纯中文、中英混、带空格、全角括号、emoji 文件名）
+  说明：压缩端"不加顶层前缀"后包内路径变了，但断言用子串/basename 匹配，不受影响，无需改。
+
+## test_encrypt.py — 加解密闭环（10 条，未改）
+- zip none/zipcrypto/aes 往返、7z none/aes 往返、targz none 往返 / 正确密码解、比对内容 / 退0，内容一致
+- zip zipcrypto/aes 错密码解 / COMPRESS_PW 给错值 / 退4，stderr 含"密码错误"
+- ★ zip zipcrypto/aes 空密码解加密包 / COMPRESS_PW="" / 退4
+  说明：内容一致断言用 assert_contains_files（递归 rglob 找文件），不依赖具体落地路径，新布局下照样成立，无需改。
+
+## test_errors.py — 错误契约 §3/§4（21 条，纯 stdlib，未改）
+- compress 缺 --format/--encrypt、非法枚举、无 PATH → 退2 usage:
+- targz+aes/zipcrypto → 退5"tar.gz 不支持加密"；7z+zipcrypto → 退5"7z 不支持 ZipCrypto 加密"
+- aes/zipcrypto 空密码或未设 COMPRESS_PW 压缩 → 退4"该加密方式需要密码，但未提供"
+- 输入不存在 / 多输入其一不存在 → 退3"找不到输入"；--out 父目录不存在 → 退1"写入失败"
+- ★§3 校验顺序：格式先于输入(退2)、密码先于输入(退4)
+- extract 缺 ARCHIVE→退2；包不存在→退3；不支持格式→退5；截断损坏包→退1"压缩包损坏或不完整"不崩栈
+
+## test_edge.py — 边界/替用户想到的（6 条，未改）
+- ★名字带空格 / emoji 压解往返内容一致
+- ★symlink 跟随（文件 / 目录）/ 输入含软链 / 解出存的是目标内容、普通文件
+- ZipCrypto >4GiB 退5（稀疏桩，标 slow）；★AES >4GiB 无限制对照（标 slow，需 pyzipper）
+  说明：压缩侧 symlink 是"跟随存目标内容"（§1.3.1，未变）；与解压侧"拒绝链接成员"（§2.3，针对外部包）是两码事，别混。
+
+---
+
+## 覆盖矩阵小结（五类清单逐类过）
+| 类别 | 覆盖 |
 |---|---|
-| 正向主路径 | zip/7z/targz 压+解往返、内容一致；none/aes/zipcrypto 加解密闭环 |
-| 头号（中文 zip 头部） | none/aes/zipcrypto ×（flag 断言 + 反向不乱码），共 6 条 |
-| 错误契约 §4 | 退出码 1/2/3/4/5 全覆盖；stderr 稳定子串；§3 校验顺序 2 条 |
-| 不删不覆盖 | 压两次改名、--out 占坑避让、源不被动、解两次落 -1、占坑目录不被动 |
-| 多选 + 命名 §1.3 | 单文件/单目录/同目录多选/跨目录多选 4 种命名规则 |
-| 安全 §2.3 | tar-slip（3 种 ../ 形态 + 绝对路径）、dest 外零落地、带密码 rar |
-| 边界 | 空格/emoji/空目录/symlink（文件+目录）/超 4GiB |
+| 正常路径（happy path） | zip/7z/targz 压+解往返内容一致；none/aes/zipcrypto 加解密闭环；中文/空格/emoji |
+| 边界值 | 单顶层项↔多顶层项分界、空包(0项)↔空目录(1项)、单文件夹装多文件、>4GiB、空文件夹、跨目录多选 |
+| 错误路径 | 退出码 1/2/3/4/5 全覆盖；缺参/非法枚举/缺密码/输入不存在/损坏包/非法 --layout；§3 校验顺序 |
+| 安全/恶意输入 | Zip Slip（tar/zip/反斜杠/绝对路径，dest 外零落地）、软链顺链逃逸、硬链接、带密码 rar 拒绝 |
+| 幂等/状态 | 压缩同名连压 -N 避让、--out 占坑避让、解压两次顶层项改名、原地解自压包不 merge 覆盖源、全程不删不覆盖 |
+
+## 替用户想到的（需求/接口没逐字写、但按常理必须对）
+- 空包 vs 空目录的区分（0 顶层项报"空"、1 目录顶层项正常铺开）
+- 铺开布局下 stdout 到底打哪个路径（=dest 本身，不是子文件夹）——直接断言死
+- 拒绝链接成员时"dest 外那个 outside 目录必须一个文件都没有"（不只看退出码，防止先落链接再拒的半写）
+- 反斜杠既要能拦越界（..\..）又要能正常解合法层级（top\sub），两面都测
+- 原地解自压包特意用"单文件夹装多文件"构造，精确打"逐成员判重会 merge 覆盖源"这个退化点
+- 压缩侧 symlink 跟随 与 解压侧拒绝链接成员 是两个方向，分别在 test_edge / test_security，不互相污染
 
 ## 说明
-- 退出码 6（缺依赖）：无法在有依赖的环境里稳定构造，未单列断言；由 importorskip 间接覆盖（缺库时相关用例 skip）。
-- 退出码 1「写入失败」的解压侧、7z 成员穿越：未单列（tar-slip 已代表穿越防护主逻辑）。
-- 带密码 rar、超大文件：需外部样本/大体积，分别用 skip 与 slow 标记；核心契约不受影响。
+- 退出码 6（缺依赖）：无法在有依赖的环境里稳定构造，未单列断言；由 importorskip 间接覆盖。
+- 7z / rar 的 Zip Slip 与链接成员：路径/链接校验按契约"对所有格式一视同仁"，用 tar+zip+反斜杠已覆盖校验逻辑本身；7z 构造成本高、rar 本机无创建工具，未单列（rar 带密码另有 skip 用例占位）。
+- 带密码 rar、超大文件：需外部样本 / 大体积，分别用 skip 与 slow 标记；核心契约不受影响。
+- 实现（czip.py）尚未按新契约改，故当前 `pytest tests/acceptance/` 会有一批 FAILED（新断言打在旧行为上）——这是预期，改完实现应转绿。collect 阶段零错误。

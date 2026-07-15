@@ -49,8 +49,11 @@ def compress(fmt, encrypt, *inputs, pw=None, out=None):
     return run_czip(*args, pw=pw)
 
 
-def extract(archive, dest=None, pw=None):
+def extract(archive, dest=None, layout=None, pw=None):
+    """layout=None → 不传 --layout（默认 auto）；否则透传 auto/flatten/folder（或非法值用于测退2）。"""
     args = ["extract"]
+    if layout is not None:
+        args += ["--layout", str(layout)]
     if dest is not None:
         args += ["--dest", str(dest)]
     args += ["--", str(archive)]
