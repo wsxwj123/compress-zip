@@ -445,8 +445,10 @@ class _RarSource:
             raise CzipError(EXIT_UNSUPPORTED, "不支持带密码的 rar 解压")
         self.entries = []
         for ri in self.rf.infolist():
-            is_link = getattr(ri, "file_redir", None) is not None
-            self.entries.append(_M(ri.filename, ri.isdir(), is_link, ri))
+            # rarfile 自带 is_symlink()：RAR3（靠 mode&0xF000==0xA000）与 RAR5
+            # （file_redir，含 junction/hardlink）两个子类都正确实现，别自己判 file_redir
+            self.entries.append(_M(ri.filename, ri.isdir(),
+                                   ri.is_symlink(), ri))
 
     def prepare(self):
         pass
