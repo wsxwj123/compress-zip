@@ -96,9 +96,10 @@ osascript -e 'display notification "开始压缩…" with title "compress-zip"'
 # 密码走环境变量 COMPRESS_PW，不进 argv/ps
 OUT=$(COMPRESS_PW="$PW" "$PY" "$CORE" compress --format "$FMT" --encrypt "$ENC" -- "$@" 2&gt;"$ERRF")
 if [ $? -eq 0 ]; then
-  osascript -e "display notification \"完成：$(basename "$OUT")\" with title \"compress-zip\""
+  # 输出路径/错误内容走 argv 当纯数据，绝不拼进 AppleScript 字符串（防注入 → 任意代码执行）
+  osascript -e 'on run argv' -e 'display notification ("完成：" &amp; item 1 of argv) with title "compress-zip"' -e 'end run' "$(basename "$OUT")"
 else
-  osascript -e "display alert \"压缩失败\" message \"$(cat "$ERRF")\""
+  osascript -e 'on run argv' -e 'display alert "压缩失败" message (item 1 of argv)' -e 'end run' "$(cat "$ERRF")"
 fi
 </string>
 					<key>CheckedForUserDefaultShell</key>
