@@ -86,7 +86,8 @@ for arc in "$@"; do
   fi
   if [ $? -ne 0 ]; then
     fail=1
-    osascript -e "display alert \"解压失败：$(basename "$arc")\" message \"$(cat "$ERRF")\""
+    # 文件名/错误内容走 argv 当纯数据，绝不拼进 AppleScript 字符串（防注入 → 任意代码执行）
+    osascript -e 'on run argv' -e 'display alert ("解压失败：" &amp; item 1 of argv) message (item 2 of argv)' -e 'end run' "$(basename "$arc")" "$(cat "$ERRF")"
   fi
 done
 [ $fail -eq 0 ] &amp;&amp; osascript -e 'display notification "解压完成" with title "compress-zip"'
