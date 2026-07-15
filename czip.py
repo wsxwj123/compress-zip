@@ -576,8 +576,11 @@ def _place_members(source, dest, layout, pkgname):
         landing = dest
         rename_map = _flatten_rename_map(dest, tops)
 
-    staging = tempfile.mkdtemp(prefix=".czip-extract-", dir=dest)
-    base_real = os.path.realpath(staging)
+    try:
+        staging = tempfile.mkdtemp(prefix=".czip-extract-", dir=dest)
+        base_real = os.path.realpath(staging)
+    except OSError:  # dest 不可写等 → 别让裸 OSError 冒到 main 打 traceback
+        raise CzipError(EXIT_INTERNAL, "写入失败")
     try:
         source.prepare()
         for segs, is_dir, m in members:
