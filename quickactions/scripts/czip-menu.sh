@@ -33,6 +33,7 @@ fi
 
 # --- 找一个装了依赖的 python3（右键运行时 PATH 极简，command -v 会选错）---
 find_py() {
+  setopt local_options null_glob   # glob 无匹配时展开为空，别让没装 pyenv 的用户在此中止
   local c
   for c in "$REAL_HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
            /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do

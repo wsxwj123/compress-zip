@@ -41,6 +41,7 @@ echo "  右键服务 App 已装到 $APP 并注册"
 # 用和运行时 find_py 一致的探测：找一个三件依赖齐全的 python，别被没装依赖的默认 python3 误导。
 echo ""
 echo "依赖检查："
+setopt null_glob   # 没装 pyenv 时 ~/.pyenv/versions/* 无匹配，别让 set -e 脚本在此中止
 PY=""
 for c in "$HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
          /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
