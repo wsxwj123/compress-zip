@@ -50,8 +50,11 @@ ERRF="$(mktemp -t compresszip)"
 trap 'rm -f "$ERRF"' EXIT
 
 # 弹密码框（隐藏输入）。成功 echo 密码；用户取消返回非 0。
+# 提示文案走 argv（on run a），绝不拼进 AppleScript 源码——否则文件名里的引号可注入执行任意代码。
 ask_pw() {
-  osascript -e "text returned of (display dialog \"$1\" default answer \"\" with hidden answer buttons {\"取消\",\"确定\"} default button \"确定\")" 2>/dev/null
+  osascript -e 'on run a' \
+    -e 'text returned of (display dialog (item 1 of a) default answer "" with hidden answer buttons {"取消","确定"} default button "确定")' \
+    -e 'end run' "$1" 2>/dev/null
 }
 notify() { osascript -e 'on run a' -e 'display notification (item 1 of a) with title "compress-zip"' -e 'end run' "$1"; }
 alert()  { osascript -e 'on run a' -e 'display alert (item 1 of a) message (item 2 of a)' -e 'end run' "$1" "$2"; }
