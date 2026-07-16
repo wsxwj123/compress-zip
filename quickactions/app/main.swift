@@ -13,7 +13,8 @@ final class ServiceProvider: NSObject {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/zsh")
         task.arguments = [scriptPath, mode] + paths
-        try? task.run()
+        do { try task.run() }                     // 别静默吞错：脚本缺失/无权限时留日志可查
+        catch { NSLog("compress-zip: 无法启动 %@ (%@): %@", scriptPath, mode, error.localizedDescription) }
     }
 
     // 消息名保持不变（compressZip/decompressZip），用户已绑的快捷键不受影响。
