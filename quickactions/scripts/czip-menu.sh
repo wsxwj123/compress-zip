@@ -22,12 +22,14 @@ typeset -a ITEMS
 if [ $# -gt 0 ]; then
   ITEMS=("$@")
 else
-  sel=$(osascript -e 'tell application "Finder" to set s to selection' \
-    -e 'set out to ""' \
-    -e 'repeat with i in s' \
-    -e 'set out to out & (POSIX path of (i as alias)) & linefeed' \
-    -e 'end repeat' -e 'return out' 2>/dev/null)
-  while IFS= read -r line; do [ -n "$line" ] && ITEMS+=("$line"); done <<< "$sel"
+  # 用 NUL 分隔并直接管道喂 read（NUL 存不进变量，也不可能出现在文件名里）——
+  # 文件名含空格/换行都不会被切错。
+  while IFS= read -r -d '' item; do ITEMS+=("$item"); done < <(
+    osascript -e 'tell application "Finder" to set s to selection' \
+      -e 'set out to ""' \
+      -e 'repeat with i in s' \
+      -e 'set out to out & (POSIX path of (i as alias)) & (character id 0)' \
+      -e 'end repeat' -e 'return out' 2>/dev/null)
 fi
 [ ${#ITEMS[@]} -eq 0 ] && exit 0
 
