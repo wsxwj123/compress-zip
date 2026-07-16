@@ -29,7 +29,7 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$SRC/quickactions/app/Info.plist" "$APP/Contents/Info.plist"
 xcrun swiftc "$SRC/quickactions/app/main.swift" \
   -o "$APP/Contents/MacOS/CompressZip" -framework Cocoa
-codesign -s - --force --deep "$APP" 2>/dev/null || true   # ad-hoc 签名，无需开发者账号
+codesign -s - --force "$APP" 2>/dev/null || true   # ad-hoc 签名，无需开发者账号（--deep 已弃用，单可执行 App 用不上）
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 "$LSREG" -f "$APP" 2>/dev/null || true
 /System/Library/CoreServices/pbs -update 2>/dev/null || true
