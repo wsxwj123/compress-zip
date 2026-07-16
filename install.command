@@ -14,9 +14,7 @@ echo "compress-zip 安装开始…"
 CORE_DIR="$HOME/tools/compress-zip"
 mkdir -p "$CORE_DIR"
 cp "$SRC/czip.py" "$SRC/zipcrypto.py" \
-   "$SRC/quickactions/scripts/czip-menu.sh" \
-   "$SRC/quickactions/scripts/compress.sh" \
-   "$SRC/quickactions/scripts/decompress.sh" "$CORE_DIR/"
+   "$SRC/quickactions/scripts/czip-menu.sh" "$CORE_DIR/"
 chmod +x "$CORE_DIR"/*.sh
 echo "  内核+脚本已装到 $CORE_DIR"
 
