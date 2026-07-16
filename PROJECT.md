@@ -9,7 +9,10 @@
 - 03 测试设计：✅ 卡点2已确认，验收测试锁定（LOCK 已落盘）
 - 04 开发：✅ czip.py + zipcrypto.py 内核完成，解压逻辑重构已落地（命名归档/智能布局/拒链接/Zip Slip每成员复核）
 - 05 验收：✅ 裁判合格（头号中文+数据安全达标）；BUG-01~04 全部已修
-- 05.5 安全审计：✅ AppleScript 注入致命已修（argv 传参 @92dc9e9/ca04402）
+- 05.5 安全审计：✅ 两轮完成
+  - 核心 czip.py：AppleScript 注入致命已修（argv 传参 @92dc9e9/ca04402）
+  - 集成层专项审计（opus 实证攻击）：致命 0；ask_pw 注入实证已堵；Zip Slip/symlink/数据覆盖/密码泄漏全格式挡住；唯一 🟠 zip 炸弹 DoS 已修（改流式，峰值 1.7GB→75MB）@f8e0327。报告见 .devflow/SECURITY-REPORT-integration.md
+- 05 代码审查（fable，右键集成层）：✅ 2 致命(ask_pw 注入 @a27c44c / NOMATCH glob @ffa5f8e) + 4 改进全修
 - 🟢 访达右键集成：✅ **已定案并跑通**
   - **交付形态变更**：从"手写 .workflow 快捷操作"改为 **NSService 壳 App（CompressZip.app）**——手写 workflow 在 macOS 15 无法可靠登记进右键；壳 App 走 NSServices，机制同 MacZip，pbs 自动登记，稳定出现在「服务」子菜单
   - **OneDrive 关键结论**：用户重度用 OneDrive。所有右键增强 App（Menuist/超级右键等）靠 Finder Sync 扩展，在云盘文件夹里**一律失效**（File Provider 独占，苹果官方确认）。唯 NSServices 不受限 → 本方案在 OneDrive 里照常可用（用户已实测确认"在、能用"）
