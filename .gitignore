@@ -5,3 +5,4 @@ __pycache__/
 venv/
 *.egg-info/
 test-tmp/
+.pytest_cache/

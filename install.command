@@ -1,42 +1,61 @@
 #!/bin/zsh
-# compress-zip 一键安装：拷两个快捷操作到 ~/Library/Services，拷内核到 ~/tools/compress-zip。
-# 双击运行即可（如提示无法打开，右键→打开，或先 chmod +x install.command）。
+# compress-zip 一键安装。双击运行即可（若提示无法打开：右键→打开）。
+# 做两件事：
+#   1) 内核 + 脚本 → ~/tools/compress-zip
+#   2) 构建一个后台小 App（CompressZip.app），用 macOS「服务」机制把压缩/解压
+#      加进访达右键。选服务而非 Finder Sync 扩展，是因为只有服务能在 OneDrive/
+#      iCloud 等云盘文件夹里照常出现（云盘目录被系统 File Provider 独占，第三方
+#      Finder Sync 扩展在里面一律失效）。
 set -e
 SRC="$(cd "$(dirname "$0")" && pwd)"
-
 echo "compress-zip 安装开始…"
 
-# 1) 内核（czip.py + zipcrypto.py）→ ~/tools/compress-zip（快捷操作里写死这个路径）
+# --- 1) 内核 + 脚本 → ~/tools/compress-zip ---
 CORE_DIR="$HOME/tools/compress-zip"
 mkdir -p "$CORE_DIR"
-cp "$SRC/czip.py" "$SRC/zipcrypto.py" "$CORE_DIR/"
-echo "  内核已装到 $CORE_DIR"
+cp "$SRC/czip.py" "$SRC/zipcrypto.py" \
+   "$SRC/quickactions/scripts/czip-menu.sh" \
+   "$SRC/quickactions/scripts/compress.sh" \
+   "$SRC/quickactions/scripts/decompress.sh" "$CORE_DIR/"
+chmod +x "$CORE_DIR"/*.sh
+echo "  内核+脚本已装到 $CORE_DIR"
 
-# 2) 两个快捷操作 → ~/Library/Services
-SERVICES="$HOME/Library/Services"
-mkdir -p "$SERVICES"
-cp -R "$SRC/quickactions/压缩.workflow" "$SRC/quickactions/解压.workflow" "$SERVICES/"
-# 清隔离属性，避免从网上下载后右键不出现（忽略失败）
-xattr -dr com.apple.quarantine "$SERVICES/压缩.workflow" "$SERVICES/解压.workflow" 2>/dev/null || true
-echo "  快捷操作已装到 $SERVICES"
+# --- 2) 构建并注册 NSService 壳 App ---
+if ! xcrun -f swiftc >/dev/null 2>&1; then
+  echo "  [缺] 需要 Xcode 命令行工具来编译。请先运行: xcode-select --install，装好后重跑本脚本。"
+  exit 1
+fi
+APP="$HOME/Applications/CompressZip.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+cp "$SRC/quickactions/app/Info.plist" "$APP/Contents/Info.plist"
+xcrun swiftc "$SRC/quickactions/app/main.swift" \
+  -o "$APP/Contents/MacOS/CompressZip" -framework Cocoa
+codesign -s - --force --deep "$APP" 2>/dev/null || true   # ad-hoc 签名，无需开发者账号
+LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+"$LSREG" -f "$APP" 2>/dev/null || true
+/System/Library/CoreServices/pbs -update 2>/dev/null || true
+/System/Library/CoreServices/pbs -flush  2>/dev/null || true
+open -g "$APP"   # 启动一次让服务上线（LSUIElement，后台运行、不占程序坞）
+echo "  右键服务 App 已装到 $APP 并注册"
 
-# 3) 依赖自检（只提示，不自动装——装依赖需用户确认）
+# --- 3) 依赖自检（只提示，装依赖需你确认）---
+# 用和运行时 find_py 一致的探测：找一个三件依赖齐全的 python，别被没装依赖的默认 python3 误导。
 echo ""
 echo "依赖检查："
-PY="$(command -v python3 || echo /opt/homebrew/bin/python3)"
-for mod in pyzipper py7zr rarfile; do
-  if "$PY" -c "import $mod" 2>/dev/null; then
-    echo "  [OK] $mod"
-  else
-    echo "  [缺] $mod —— 请运行: pip3 install $mod"
-  fi
+PY=""
+for c in "$HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
+         /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$c" ] && "$c" -c 'import pyzipper,py7zr,rarfile' 2>/dev/null && { PY="$c"; break; }
 done
-if command -v unar >/dev/null 2>&1; then
-  echo "  [OK] unar"
+if [ -n "$PY" ]; then
+  echo "  [OK] pyzipper / py7zr / rarfile 均已就绪（$PY）"
 else
-  echo "  [缺] unar（rar 解压需要）—— 请运行: brew install unar"
+  echo "  [缺] pyzipper/py7zr/rarfile 未在同一个 python 里凑齐 —— 在你日常用的 python 里跑: pip3 install pyzipper py7zr rarfile"
 fi
+command -v unar >/dev/null 2>&1 && echo "  [OK] unar" || echo "  [缺] unar（rar 解压需要）—— 请运行: brew install unar"
 
 echo ""
-echo "安装完成。访达里右键文件/文件夹 → 快捷操作 → 「压缩…」「解压…」。"
-echo "首次运行系统会问是否允许访问文件，点「允许」。"
+echo "安装完成。访达里右键文件/文件夹 → 最下方「服务」→「压缩…（compress-zip）」「解压…（compress-zip）」。"
+echo "嫌菜单深？去 系统设置→键盘→键盘快捷键→服务 给它俩绑快捷键，任何文件夹（含 OneDrive）按键即用。"
+echo "首次运行会问是否允许访问文件/控制 Finder，点「允许」。"
