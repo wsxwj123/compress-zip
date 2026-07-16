@@ -10,10 +10,8 @@
 # 没传就主动问 Finder 要当前选中项——这样不依赖各家右键增强 App 怎么传参。
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# 不依赖 $HOME：沙盒 App(如 Menuist)启动脚本时 $HOME 会指向它的容器目录。
-# czip.py 与本脚本同目录，按脚本自身位置找；真实家目录用 id 反查（不受 $HOME 影响）。
+# czip.py 与本脚本同目录，按脚本自身位置定位（不受调用者 cwd/$HOME 影响）。
 SELF_DIR="${0:A:h}"
-REAL_HOME="$(eval echo ~"$(/usr/bin/id -un)")"
 
 MODE="$1"; shift
 
@@ -37,7 +35,7 @@ fi
 find_py() {
   setopt local_options null_glob   # glob 无匹配时展开为空，别让没装 pyenv 的用户在此中止
   local c
-  for c in "$REAL_HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
+  for c in "$HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
            /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
     [ -x "$c" ] && "$c" -c 'import pyzipper,py7zr,rarfile' 2>/dev/null && { printf '%s' "$c"; return 0; }
   done
