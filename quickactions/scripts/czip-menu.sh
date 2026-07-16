@@ -10,6 +10,11 @@
 # 没传就主动问 Finder 要当前选中项——这样不依赖各家右键增强 App 怎么传参。
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# 不依赖 $HOME：沙盒 App(如 Menuist)启动脚本时 $HOME 会指向它的容器目录。
+# czip.py 与本脚本同目录，按脚本自身位置找；真实家目录用 id 反查（不受 $HOME 影响）。
+SELF_DIR="${0:A:h}"
+REAL_HOME="$(eval echo ~"$(/usr/bin/id -un)")"
+
 MODE="$1"; shift
 
 # --- 取选中项 ---
@@ -29,7 +34,7 @@ fi
 # --- 找一个装了依赖的 python3（右键运行时 PATH 极简，command -v 会选错）---
 find_py() {
   local c
-  for c in "$HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
+  for c in "$REAL_HOME/.pyenv/versions"/*/bin/python3 "$(pyenv which python3 2>/dev/null)" \
            /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
     [ -x "$c" ] && "$c" -c 'import pyzipper,py7zr,rarfile' 2>/dev/null && { printf '%s' "$c"; return 0; }
   done
@@ -40,7 +45,7 @@ if [ -z "$PY" ]; then
   osascript -e 'display alert "compress-zip：没找到装了依赖的 Python" message "请先 pip3 install pyzipper py7zr rarfile（装在你日常用的 Python 环境里）。"'
   exit 1
 fi
-CORE="$HOME/tools/compress-zip/czip.py"
+CORE="$SELF_DIR/czip.py"
 ERRF="$(mktemp -t compresszip)"
 trap 'rm -f "$ERRF"' EXIT
 
