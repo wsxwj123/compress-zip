@@ -26,6 +26,9 @@ EXIT_PASSWORD = 4
 EXIT_UNSUPPORTED = 5
 EXIT_DEP = 6
 
+# 解压时分块拷贝的块大小：成员再大，内存占用也只到这个量级（防 zip 炸弹撑爆内存）。
+_CHUNK = 1024 * 1024
+
 
 class CzipError(Exception):
     """业务错误：带退出码 + 会拼进 `错误: <msg>` 的说明。"""
@@ -316,9 +319,11 @@ class _ZipSource:
     def prepare(self):
         pass
 
-    def read(self, m):
+    def copy_to(self, m, out):
+        # 分块流式写，不把整个成员读进内存。异常映射与原 read 一致。
         try:
-            return self.zf.read(m.h)
+            with self.zf.open(m.h) as src:
+                shutil.copyfileobj(src, out, _CHUNK)
         except RuntimeError:
             raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
         except (zipfile.BadZipFile, zlib.error, EOFError):
@@ -353,10 +358,11 @@ class _TarSource:
     def prepare(self):
         pass
 
-    def read(self, m):
+    def copy_to(self, m, out):
         try:
             f = self.tar.extractfile(m.h)
-            return f.read() if f is not None else b""
+            if f is not None:
+                shutil.copyfileobj(f, out, _CHUNK)
         except (self._tarfile.TarError, OSError):
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
@@ -403,10 +409,11 @@ class _SevenZipSource:
                 raise CzipError(EXIT_PASSWORD, "密码错误或压缩包已损坏")
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
-    def read(self, m):
+    def copy_to(self, m, out):
+        # py7zr 已整体解到临时目录，这里分块拷贝落地文件，避免整文件读进内存。
         p = os.path.join(self.raw, *m.name.split("/"))
         with open(p, "rb") as f:
-            return f.read()
+            shutil.copyfileobj(f, out, _CHUNK)
 
     def close(self):
         try:
@@ -443,9 +450,10 @@ class _RarSource:
     def prepare(self):
         pass
 
-    def read(self, m):
+    def copy_to(self, m, out):
         try:
-            return self.rf.read(m.h)
+            with self.rf.open(m.h) as src:
+                shutil.copyfileobj(src, out, _CHUNK)
         except self._rarfile.Error:
             raise CzipError(EXIT_INTERNAL, "压缩包损坏或不完整")
 
@@ -588,9 +596,8 @@ def _place_members(source, dest, layout, pkgname):
                 _safe_makedirs(target)
             else:
                 _safe_makedirs(os.path.dirname(target))
-                data = source.read(m)
                 with open(target, "wb") as f:
-                    f.write(data)
+                    source.copy_to(m, f)
 
         if wrap:
             os.rename(staging, landing)          # 整壳一次改名（廉价原子）
