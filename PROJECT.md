@@ -22,9 +22,16 @@
   - "藏太深"用键盘快捷键弥补（用户已自行绑定，NSKeyEquivalent 已登记生效）
   - install.command 已重写为"装内核+脚本 + 编译注册壳 App"，依赖检查修为 find_py 一致探测
 
+## 阶段进度（续）
+- 06 发布：✅ 公开仓库 https://github.com/wsxwj123/compress-zip ，master 全量推送，CI(macOS pytest) 绿
+  - 直推 master（未走 PR：初次发布 + 两账号/代理摩擦下从简；后续变更走 feature 分支+PR）
+  - 建仓账号切换：wsxwj123（gh 两账号，owner 级操作切 wsxwj123 建仓、完事切回 euphoriaaaaaa1）
+  - CI 首跑失败(无 pytest + pip/python 指向不同解释器)→ 修(python -m pip 装 pytest)→ 绿
+- 07 用户实测终审：🔄 进行中
+  - ✅ 右键服务在访达（含 OneDrive 文件夹）出现且可用
+  - ⏳ 待用户确认：4 菜单项齐全、加密压缩(第2项)→解压输密码 全链在本机顺畅
+
 ## 待收尾
-- [ ] 06 发布：push GitHub 公开仓库 wsxwj123
-- [ ] 07 用户实测终审（右键压缩/解压 + OneDrive 场景已通过）
 - ⚠️ 已知局限：默认原地解压外部"无顶层前缀扁平包"到已存在同名目录时可能覆盖同名文件；本工具自压的包无此问题
 
 ## Bug 台账
