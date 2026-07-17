@@ -24,6 +24,8 @@ if ! xcrun -f swiftc >/dev/null 2>&1; then
   exit 1
 fi
 APP="$HOME/Applications/CompressZip.app"
+# 先杀掉在跑的旧实例，否则它会继续用内存里的老代码服务右键，重装等于没更新。
+killall CompressZip 2>/dev/null || true
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$SRC/quickactions/app/Info.plist" "$APP/Contents/Info.plist"
